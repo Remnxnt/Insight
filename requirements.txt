@@ -1,0 +1,5 @@
+die==0.2.0
+pefile==2023.2.7
+python_magic==0.4.27
+Requests==2.32.3
+yara_python==4.5.1
