@@ -39,7 +39,7 @@ python insight.py <input_file> <output_file> [options]
 ### Example
 
 ```
-python Insight.py suspicious_file.exe report.txt -u -b -f -y my_rules.yar
+python insight.py suspicious_file.exe report.txt -u -b -f -y my_rules.yar
 ```
 
 ### VirusTotal API Key

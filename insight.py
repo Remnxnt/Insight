@@ -30,7 +30,7 @@ def parse_args():
     args = parser.parse_args()
 
     if args.offline and args.upload:
-        print('\nWhy would you do that? --offline and --upload are mutually exclusive silly goose. Disregarding --upload.\n')
+        print('\nWhy would you do that? --offline and --upload / --browser are mutually exclusive silly goose. Disregarding --upload / --browser.\n')
         args.upload = False
 
     return args
@@ -45,48 +45,78 @@ def compile_regex_patterns():
     }
 
 import math
-def entropy(data):
-    if not data:
+def entropy(filepath):
+    if not os.path.isfile(filepath):
         return 0.0
+    
+    byte_counts = [0] * 256
+    total_bytes = 0
+    
+    with open(filepath, 'rb') as f:
+        while chunk := f.read(8192):
+            total_bytes += len(chunk)
+            for byte in chunk:
+                byte_counts[byte] += 1
+
+    if total_bytes == 0:
+        return 0.0
+    
     entropy = 0
-    for x in range(256):
-        p_x = data.count(x) / len(data)
+    for count in byte_counts:
+        p_x = count / total_bytes
         if p_x > 0:
             entropy += - p_x * math.log(p_x, 2)
     return entropy
 
-def fnindicators(data, patterns):
-    return {
-        'IP Addresses': patterns['ip'].findall(data),
-        'URLs': patterns['url'].findall(data),
-        'Potential Domains': patterns['domain'].findall(data),
-        'Emails': patterns['email'].findall(data)
-    }
+def fnindicators(filepath, patterns):
+    indicators = {key: [] for key in patterns}
+    with open(filepath, 'r', errors='ignore') as f:
+        while chunk := f.read(8192):
+            if chunk:
+                for key, pattern in patterns.items():
+                    if key in indicators:
+                        indicators[key].extend(pattern.findall(chunk))
+    for key in indicators:
+        indicators[key] = list(set(indicators[key]))
 
-def cmdsearch(data, cmd_str):
-    return [cmd for cmd in cmd_str if cmd in data]
+    return indicators
 
+def cmdsearch(filepath, cmd_str):
+    matches = []
+    with open(filepath, 'r', errors='ignore') as f:
+        while chunk := f.read(8192):
+            for cmd in cmd_str:
+                if cmd in chunk:
+                    matches.append(cmd)
+    return matches
 
-import hashlib, magic, os; from pathlib import Path
+import hashlib
+def hashslingingslasher(filepath):
+    md5 = hashlib.md5()
+    sha256 = hashlib.sha256()
+    with open(filepath,'rb') as f:
+        while chunk := f.read(8192):
+            md5.update(chunk)
+            sha256.update(chunk)
+    return md5.hexdigest(), sha256.hexdigest()
+
+import magic, os; from pathlib import Path
 def finfo(args, cmd_str, patterns):
     m = magic.Magic(mime=True)
     ft = m.from_file(args.input)
-    fsizeb = os.path.getsize(args.input)
-    if fsizeb > 681574400:
-        if not args.Force:
-            raise SystemExit('File too `large, you can try with -F or --Force.')
-    with open(args.input, 'rb') as f:
-        fcontent = f.read()
-    md5 = hashlib.md5(fcontent).hexdigest()
-    sha256 = hashlib.sha256(fcontent).hexdigest()
-    fentropy = 'Disabled'
-    fentropy = entropy(fcontent)
+    md5, sha256 = hashslingingslasher(args.input)
+    fentropy = entropy(args.input)
     fname = os.path.basename(args.input)
     fname2 = Path(args.input).stem
-    dfcontent = fcontent.decode(errors='ignore')
-    nindicators = fnindicators(dfcontent, patterns)
-    cmdmatch = cmdsearch(dfcontent, cmd_str)
-    return ft, md5, sha256, fsizeb, fentropy, fname, fname2, nindicators, cmdmatch
+    if args.floss:
+        run_floss(args, fname2)
+        floss_file_path = f'floss_{fname2}.txt'
+        nindicators = fnindicators(floss_file_path, patterns)
+        cmdmatch = cmdsearch(floss_file_path, cmd_str)
+    else:
+        nindicators = fnindicators(args.input, patterns)
+        cmdmatch = cmdsearch(args.input, cmd_str)
+    return ft, md5, sha256, fentropy, fname, nindicators, cmdmatch
 
 def fsizeconv(fsizeb):
     if fsizeb < 1024:
@@ -143,15 +173,20 @@ def virustotal(args, ft, sha256, fsizeb):
                 files = {"file": (args.input, open(args.input, 'rb'), ft)}
                 upload_response = requests.post(url=upl_url, files=files, headers=headers)
             if upload_response.status_code == 200 and args.browser:
+                print('Upload to VirusTotal complete.')
                 webbrowser.open(f'https://virustotal.com/gui/file/{sha256}')
                 return True
         else:
             print('File not found on VirusTotal, and upload not selected. Skipping.')
             return False
     elif response.status_code == 200:
+        print('File was successfully found in VirusTotal database.')
         if args.browser:
             webbrowser.open(f'https://virustotal.com/gui/file/{sha256}')
         return True
+    elif response.status_code == 401:
+        print('Unauthorized, Check API key.')
+        return False
     else:
         print(f'{response.status_code}\n')
         print(f'{response}')
@@ -159,9 +194,9 @@ def virustotal(args, ft, sha256, fsizeb):
         return False
 
 def run_floss(args, fname2):
-    floss_cmd = f'floss.exe {args.input} -q > floss_{fname2}.txt'
+    floss_cmd = f'floss.exe "{args.input}" > floss_{fname2}.txt'
     os.system(floss_cmd)
-    print(f'FLOSS output has been saved to floss_{fname2}.txt')
+    print(f"FLOSS output has been saved to floss_{fname2}.txt")
 
 def write_report(args, fname, fsize, md5, sha256, ft, vt, fentropy, nindicators, cmdmatch, dieo, ctime, fentry, fibase, fsections, yara_matches):
     with open(args.output, 'w', encoding='utf-8') as output_file:
@@ -196,10 +231,15 @@ def write_report(args, fname, fsize, md5, sha256, ft, vt, fentropy, nindicators,
             output_file.write('PE Sections:\n')
             for section in fsections:
                 output_file.write(f"    Name: {section[0]}, Virtual Address: {section[1]}, Virtual Size: {section[2]}\n")
-        output_file.write(f"YARA Matches: {'No Matches' if not yara_matches else f'\n{yara_matches}'}")
+        if args.yara:
+            output_file.write(f"YARA Matches: {'No Matches' if not yara_matches else yara_matches}")
 import json, die
 def main():
     args = parse_args()
+    fsizeb = os.path.getsize(args.input)
+    if fsizeb > 681574400:
+        if not args.Force:
+            raise SystemExit('File too `large, you can try with -F or --Force.')
     cmd_str = [
         'cmd.exe', 'cmd', 'powershell.exe', 'wscript.exe', 'cscript.exe',
         'rundll32.exe', 'regsvr32.exe', '/bin/sh', '/bin/bash', '/bin/ksh', '/bin/zsh',
@@ -211,15 +251,16 @@ def main():
         'curl', 'wget', 'PsExec', 'RDP', 'SSH'
     ]
     patterns = compile_regex_patterns()
-    ft, md5, sha256, fsizeb, fentropy, fname, fname2, nindicators, cmdmatch = finfo(args, cmd_str, patterns)
+    ft, md5, sha256, fentropy, fname, nindicators, cmdmatch = finfo(args, cmd_str, patterns)
     fsize = fsizeconv(fsizeb)
     ctime, fentry, fibase, fsections = pe_info(args)
     dieostr = die.scan_file(args.input, die.ScanFlags.RESULT_AS_JSON, str(die.database_path/'db'))
     dieo = json.loads(dieostr)
-    yara_matches = yara_match(args.input, args.yara) if args.yara else False
+    if args.yara:
+        yara_matches = yara_match(args.input, args.yara)  
+    else:
+        yara_matches = False
     vt = virustotal(args, ft, sha256, fsizeb) if not args.offline else False
-    if args.floss:
-        run_floss(args, fname2)
     write_report(args, fname, fsize, md5, sha256, ft, vt, fentropy, nindicators, cmdmatch, dieo, ctime, fentry, fibase, fsections, yara_matches)
 
 if __name__ == '__main__':
